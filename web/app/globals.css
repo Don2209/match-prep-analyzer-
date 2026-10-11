@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --bg: #f4f4f2;
+  --surface-1: #fcfcfb;
+  --surface-2: #f0efec;
+  --border: #e2e1dc;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7a7974;
+  --series-1: #2a78d6; /* our team */
+  --series-2: #eb6834; /* opponent */
+  --accent: #2a78d6;
+  --pitch: #eef3ee;
+  --pitch-line: #b9c4ba;
+  --good: #008300;
+  --warn: #c98500;
+  --bad: #e34948;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111110;
+    --surface-1: #1a1a19;
+    --surface-2: #232321;
+    --border: #383835;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e86;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --accent: #3987e5;
+    --pitch: #1d241e;
+    --pitch-line: #3e4a40;
+    --good: #2fa84f;
+    --warn: #c98500;
+    --bad: #e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111110;
+  --surface-1: #1a1a19;
+  --surface-2: #232321;
+  --border: #383835;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #8f8e86;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --accent: #3987e5;
+  --pitch: #1d241e;
+  --pitch-line: #3e4a40;
+  --good: #2fa84f;
+  --warn: #c98500;
+  --bad: #e66767;
+}
+
+html, body { background: var(--bg); color: var(--text-primary); }
+body { -webkit-font-smoothing: antialiased; }
+
+.card { @apply rounded-2xl border border-line bg-surface p-4 sm:p-5; }
+.label { @apply text-xs font-medium uppercase tracking-wide text-muted; }
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50; }
+.btn-primary { @apply btn bg-accent text-white hover:brightness-110; }
+.btn-ghost { @apply btn border border-line bg-surface2 text-ink hover:border-ink2; }
+.input { @apply w-full rounded-xl border border-line bg-surface2 px-3 py-2 text-sm text-ink outline-none focus:border-accent; }
+
+@media print {
+  .no-print { display: none !important; }
+  .card { break-inside: avoid; }
+}
