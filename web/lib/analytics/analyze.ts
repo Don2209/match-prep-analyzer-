@@ -11,6 +11,7 @@ import {
 } from "../types";
 import { dist, homography, hullArea, mean, partition1d, Pt, round, std } from "./geometry";
 import { buildInsights } from "./insights";
+import { assessReliability } from "./reliability";
 
 type Side = "ours" | "opp";
 const SIDES: Side[] = ["ours", "opp"];
@@ -45,7 +46,26 @@ const MAX_SPEED = 12; // faster than any human → tracking glitch
 /** Express an absolute point in a team's own frame (team attacks towards +x, its left is low y). */
 const teamFrame = (side: Side, p: Pt): Pt => (side === "ours" ? p : [L - p[0], W - p[1]]);
 
-function makeProjector(tracking: TrackingResult, cfg: AnalysisConfig): (p: Pt) => Pt | null {
+/** Camera pans larger than this (fraction of frame width) count as a moving camera. */
+const PAN_THRESHOLD = 0.08;
+
+export function cameraExtent(tracking: TrackingResult) {
+  const cam = tracking.camera;
+  if (!cam?.length) return 0;
+  const xs = cam.map((c) => c[0]);
+  return Math.max(...xs) - Math.min(...xs);
+}
+
+/**
+ * Maps a normalised image point in frame `i` to absolute pitch metres (our team attacking +x).
+ * Camera pans are undone first by shifting every point into the coordinates of the reference
+ * (calibration) frame, so a static player stays put even when the camera follows play.
+ */
+function makeProjector(tracking: TrackingResult, cfg: AnalysisConfig): (p: Pt, i: number) => Pt | null {
+  const cam = tracking.camera?.length === tracking.frames.length ? tracking.camera : null;
+  const ref = cam ? cam[Math.min(tracking.calibrationIndex ?? 0, cam.length - 1)] : [0, 0];
+  const stabilise = ([x, y]: Pt, i: number): Pt => (cam ? [x - cam[i][0] + ref[0], y - cam[i][1] + ref[1]] : [x, y]);
+
   let toPitch: (p: Pt) => Pt = ([x, y]) => [x * L, y * W];
   const cal = cfg.calibration;
   if (cal && cal.image.length === 4) {
@@ -56,12 +76,23 @@ function makeProjector(tracking: TrackingResult, cfg: AnalysisConfig): (p: Pt) =
       [x0 + length, y0 + width],
       [x0, y0 + width],
     ]);
+  } else if (cam && cameraExtent(tracking) > PAN_THRESHOLD) {
+    // Uncalibrated panning footage: stretch the stitched "panorama" of player positions over the pitch.
+    const xs: number[] = [], ys: number[] = [];
+    tracking.frames.forEach((f, i) => f.players.forEach((p) => {
+      const [x, y] = stabilise([p[2], p[3]], i);
+      xs.push(x);
+      ys.push(y);
+    }));
+    const q = (v: number[], f: number) => [...v].sort((a, b) => a - b)[Math.floor(f * (v.length - 1))];
+    const [x0, x1, y0, y1] = [q(xs, 0.02), q(xs, 0.98), q(ys, 0.02), q(ys, 0.98)];
+    toPitch = ([x, y]) => [((x - x0) / Math.max(1e-6, x1 - x0)) * L, ((y - y0) / Math.max(1e-6, y1 - y0)) * W];
   }
   const flip = cfg.ourDirection === "rtl";
-  return (p) => {
-    let [x, y] = toPitch(p);
+  return (p, i) => {
+    let [x, y] = toPitch(stabilise(p, i));
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-    if (x < -3 || x > L + 3 || y < -3 || y > W + 3) return null; // off the pitch (bench, stands)
+    if (x < -3 || x > L + 3 || y < -3 || y > W + 3) return null; // off the pitch (bench, spectators, stands)
     x = Math.min(L, Math.max(0, x));
     y = Math.min(W, Math.max(0, y));
     return flip ? [L - x, W - y] : [x, y];
@@ -75,15 +106,15 @@ function buildFrames(tracking: TrackingResult, cfg: AnalysisConfig, calibrated: 
   let lastOwner: Side | null = null;
   let lastOwnedAt = -Infinity;
 
-  return tracking.frames.map((f) => {
+  return tracking.frames.map((f, i) => {
     const bodies: Record<Side, Body[]> = { ours: [], opp: [] };
     for (const [id, team, x, y] of f.players) {
       if (team !== 0 && team !== 1) continue;
-      const p = project([x, y]);
+      const p = project([x, y], i);
       if (!p) continue;
       bodies[team === cfg.ourTeam ? "ours" : "opp"].push({ id, p });
     }
-    const ball = f.ball ? project(f.ball) : null;
+    const ball = f.ball ? project(f.ball, i) : null;
 
     let owner: Side | null = null;
     if (ball) {
@@ -151,9 +182,15 @@ function playerStats(side: Side, frames: Frame[], fps: number): PlayerStat[] {
     }
   const dtMax = 1.0;
   const out: PlayerStat[] = [];
-  for (const [id, s] of series) {
-    const seconds = fps > 0 ? s.length / fps : 0;
+  for (const [id, rawSeries] of series) {
+    const seconds = fps > 0 ? rawSeries.length / fps : 0;
     if (seconds < 3) continue;
+    // ~1 s centred moving average: detection jitter would otherwise add phantom distance.
+    const half = Math.max(1, Math.round(fps / 2));
+    const s = rawSeries.map((pt, i) => {
+      const win = rawSeries.slice(Math.max(0, i - half), i + half + 1).filter((q) => Math.abs(q.t - pt.t) <= 1);
+      return { t: pt.t, p: [mean(win.map((q) => q.p[0])), mean(win.map((q) => q.p[1]))] as Pt };
+    });
     let distance = 0;
     const speeds: { t: number; v: number; dt: number }[] = [];
     for (let i = 1; i < s.length; i++) {
@@ -360,10 +397,12 @@ export function analyze(tracking: TrackingResult, cfg: AnalysisConfig): Report {
     calibrated,
     ballReliable: ballReliable(tracking, frames.filter((f) => f.owner).length),
     ballDetectionRate: tracking.ballDetectionRate,
+    cameraPanned: cameraExtent(tracking) > PAN_THRESHOLD,
     model: tracking.model,
     generatedAt: new Date().toISOString(),
   };
-  const report: Report = { meta, teams, timeline: timeline(frames), insights: [] };
+  const report: Report = { meta, teams, timeline: timeline(frames), insights: [], reliability: { overall: "low", items: [] } };
+  report.reliability = assessReliability(report, tracking);
   report.insights = buildInsights(report);
   return report;
 }

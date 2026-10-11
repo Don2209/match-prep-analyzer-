@@ -131,6 +131,18 @@ export function Setup({
           <button className="btn-primary w-full" onClick={onRun} disabled={running}>
             {running ? "Building report…" : "Generate match-prep report"}
           </button>
+          <button
+            className="w-full text-center text-xs text-accent underline"
+            onClick={() => {
+              const a = document.createElement("a");
+              a.href = URL.createObjectURL(new Blob([JSON.stringify(tracking)], { type: "application/json" }));
+              a.download = `tracking-${config.oppName || "clip"}.json`.replace(/\s+/g, "_");
+              a.click();
+              URL.revokeObjectURL(a.href);
+            }}
+          >
+            Download tracking data (.json): reload it later to re-run the report without processing the video again
+          </button>
         </div>
 
         <div>

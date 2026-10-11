@@ -114,7 +114,7 @@ export default function Home() {
 
   const pill =
     health.status === "ok"
-      ? { text: "YOLOv8 football model online", color: "var(--good)" }
+      ? { text: "YOLOv8 models online", color: "var(--good)" }
       : health.status === "checking"
         ? { text: "Checking model…", color: "var(--text-muted)" }
         : health.status === "error"
@@ -174,7 +174,7 @@ export default function Home() {
       />
 
       <footer className="no-print pt-4 text-center text-xs text-muted">
-        Detection: Ultralytics YOLOv8s fine-tuned for football (ball, goalkeeper, player, referee), served as ONNX from Vercel. Only sampled frames leave your device and none are stored.
+        Detection: Ultralytics YOLOv8s (general model for grassroots footage, football-trained model for stadium footage), served as ONNX from Vercel. Only sampled frames leave your device and none are stored.
       </footer>
     </main>
   );

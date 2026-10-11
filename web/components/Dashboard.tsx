@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { Insight, Report, TeamReport } from "@/lib/types";
+import type { Insight, Level, Report, TeamReport } from "@/lib/types";
 import { AttackArrow, HeatLayer, Pitch, PositionsLayer } from "./Pitch";
 
 const C = { ours: "var(--series-1)", opp: "var(--series-2)" };
@@ -46,6 +46,8 @@ export function Dashboard({ report, onSave, saved }: { report: Report; onSave: (
           </button>
         </div>
       </div>
+
+      {report.reliability && <TrustCard report={report} />}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <PossessionTile ours={ours} opp={opp} />
@@ -102,6 +104,65 @@ export function Dashboard({ report, onSave, saved }: { report: Report; onSave: (
 
       <PlayersCard ours={ours} opp={opp} calibrated={report.meta.calibrated} />
     </section>
+  );
+}
+
+const LEVEL: Record<Level, { label: string; dots: string; color: string; advice: string }> = {
+  high: { label: "Reliable", dots: "●●●", color: "var(--good)", advice: "Good enough to plan around." },
+  medium: { label: "Indicative", dots: "●●○", color: "var(--warn)", advice: "Use for trends, not exact numbers." },
+  low: { label: "Rough", dots: "●○○", color: "var(--bad)", advice: "Don't base decisions on these numbers." },
+};
+
+function LevelBadge({ level }: { level: Level }) {
+  const l = LEVEL[level];
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold" style={{ color: l.color }}>
+      <span aria-hidden className="tracking-tighter">
+        {l.dots}
+      </span>
+      {l.label}
+    </span>
+  );
+}
+
+function TrustCard({ report }: { report: Report }) {
+  const { overall, items } = report.reliability;
+  const tips: string[] = [];
+  if (!report.meta.calibrated) tips.push("Calibrate the pitch (4 clicks in step 2). This is the biggest accuracy gain.");
+  if (report.meta.cameraPanned) tips.push("Film from a fixed, high position (a stand, a roof, or a phone on a tripod) instead of following the ball.");
+  if (report.meta.ballDetectionRate < 0.3) tips.push("Use Accurate mode, or film closer or at higher resolution, so the ball is seen more often.");
+  if (items[0]?.level !== "high") tips.push("Teams are split by shirt colour, so bibs or clearly different kits help a lot.");
+  return (
+    <div className="card">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="font-semibold">How much to trust this report</h3>
+        <span className="inline-flex items-center gap-2 text-sm">
+          Overall <LevelBadge level={overall} />
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-muted">{LEVEL[overall].advice} Ratings come from the footage and the setup, not the opponent.</p>
+      <ul className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+        {items.map((i) => (
+          <li key={i.area} className="flex items-start justify-between gap-3 border-t border-line pt-2 text-sm">
+            <span>
+              <span className="block">{i.area}</span>
+              <span className="block text-xs text-muted">{i.why}</span>
+            </span>
+            <LevelBadge level={i.level} />
+          </li>
+        ))}
+      </ul>
+      {tips.length > 0 && (
+        <div className="mt-3 rounded-xl bg-surface2 p-3 text-sm">
+          <p className="font-medium">To get more accurate data next time</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-ink2">
+            {tips.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 

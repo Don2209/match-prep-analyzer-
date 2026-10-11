@@ -22,6 +22,10 @@ export interface TrackingResult {
   frames: TrackingFrame[];
   keyframes?: { t: number; image: string | null }[];
   calibrationFrame?: string | null;
+  /** Frame index the calibration image was taken from. */
+  calibrationIndex?: number;
+  /** Cumulative camera content shift per frame (fraction of frame width/height), used to undo pans. */
+  camera?: [number, number][];
   processingSeconds: number;
 }
 
@@ -105,12 +109,22 @@ export interface Report {
     /** Ball seen often enough for possession / pressing / channel metrics to mean something. */
     ballReliable: boolean;
     ballDetectionRate: number;
+    /** The camera moved noticeably (pans were compensated as a translation). */
+    cameraPanned?: boolean;
     model: string;
     generatedAt: string;
   };
   teams: { ours: TeamReport; opp: TeamReport };
   timeline: TimelinePoint[];
   insights: Insight[];
+  reliability: Reliability;
+}
+
+export type Level = "high" | "medium" | "low";
+
+export interface Reliability {
+  overall: Level;
+  items: { area: string; level: Level; why: string }[];
 }
 
 export const PITCH = { length: 105, width: 68 } as const;

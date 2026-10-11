@@ -1,9 +1,12 @@
 "use client";
 
-import { drawOverlay, OverlayPlayer } from "./overlay";
+import { estimateShift, thumbnail, Thumb } from "./camera";
+import { drawOverlay } from "./overlay";
 import { assignTeams, Lab, torsoColour } from "./teams";
 import { Box, Tracker } from "./tracker";
-import type { PlayerRow, TrackingResult } from "./types";
+import type { PlayerRow, TrackingFrame, TrackingResult } from "./types";
+
+export type ModelChoice = "grassroots" | "pro";
 
 const BALL = 0;
 const GOALKEEPER = 1;
@@ -13,7 +16,7 @@ const MAX_SECONDS = 180;
 const MAX_FRAMES = 600;
 const TARGET_FPS = 5;
 const BATCH = 4;
-const CONCURRENCY = 3;
+const CONCURRENCY = 6; // parallel requests → separate Vercel instances
 
 export interface Progress {
   stage: "reading" | "detecting" | "finishing";
@@ -23,11 +26,10 @@ export interface Progress {
 
 /** A frame that has just been analysed, for the live preview. */
 export interface LiveFrame {
-  img: ImageData;
-  t: number;
+  frame: TrackingFrame;
+  /** Latest provisional team for every track id (refreshed as jersey colours accumulate). */
+  teams: Map<number, number>;
   duration: number;
-  players: OverlayPlayer[];
-  ball: [number, number] | null;
 }
 
 type RawDet = [number, number, number, number, number, number];
@@ -40,7 +42,7 @@ interface Pending {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function detectBatch(images: string[], signal: AbortSignal): Promise<RawDet[][]> {
+async function detectBatch(images: string[], model: ModelChoice, signal: AbortSignal): Promise<RawDet[][]> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
     if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
@@ -48,7 +50,7 @@ async function detectBatch(images: string[], signal: AbortSignal): Promise<RawDe
       const res = await fetch("/api/detect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ images, conf: 0.15 }),
+        body: JSON.stringify({ images, model, conf: 0.15 }),
         signal,
       });
       const body = await res.json().catch(() => ({}));
@@ -113,7 +115,13 @@ async function openVideo(file: File) {
 /** Runs the full detection + tracking + team-split pipeline and returns the tracking result. */
 export async function processMedia(
   file: File,
-  opts: { accurate: boolean; signal: AbortSignal; onProgress: (p: Progress) => void; onFrame?: (f: LiveFrame) => void },
+  opts: {
+    accurate: boolean;
+    model: ModelChoice;
+    signal: AbortSignal;
+    onProgress: (p: Progress) => void;
+    onFrame?: (f: LiveFrame) => void;
+  },
 ): Promise<TrackingResult> {
   const t0 = performance.now();
   const size = opts.accurate ? 960 : 640;
@@ -150,11 +158,13 @@ export async function processMedia(
   const keySlots = new Set(isImage ? [0] : [0.1, 0.5, 0.9].map((f) => Math.floor(total * f)));
   const keyframes = new Map<number, HTMLCanvasElement>();
   const pending = new Map<number, Pending>();
-  const tracker = new Tracker(Math.max(5, Math.round(fps * 3)));
+  const tracker = new Tracker(Math.max(5, Math.round(fps * 3)), [W, H]);
   const colours = new Map<number, Lab[]>();
   const roleVotes = new Map<number, [number, number]>(); // id → [referee/keeper votes, total]
   const raw: { t: number; dets: [number, Box][]; ball: [number, number] | null }[] = [];
   let next = 0; // next frame index to feed the tracker (must be in order)
+  let prevThumb: Thumb | null = null;
+  const camera: [number, number][] = []; // cumulative content shift per frame (fraction of width/height)
   let provisional = new Map<number, number>(); // early team guess for the live preview, refreshed as colours accumulate
   const currentOthers = () => new Set([...roleVotes].filter(([, [o, n]]) => o / n >= 0.5).map(([id]) => id));
   let detected = 0;
@@ -171,9 +181,18 @@ export async function processMedia(
       }));
       const balls = boxes.filter((d) => d.cls === BALL).sort((a, b) => b.conf - a.conf);
       const people = boxes.filter((d) => d.cls !== BALL);
+      let step: [number, number] = [0, 0];
+      if (!isImage) {
+        const th = thumbnail(f.img);
+        const prev = camera[camera.length - 1] ?? [0, 0];
+        const [dx, dy] = prevThumb ? estimateShift(prevThumb, th) : [0, 0];
+        camera.push([prev[0] + dx, prev[1] + dy]);
+        prevThumb = th;
+        step = [dx * W, dy * H];
+      }
       const tracks = isImage
         ? people.filter((d) => d.conf >= 0.3).map((d, i) => ({ id: i + 1, box: d.box, cls: d.cls }))
-        : tracker.update(people);
+        : tracker.update(people, step);
       const dets: [number, Box][] = [];
       for (const tr of tracks) {
         dets.push([tr.id, tr.box]);
@@ -194,12 +213,15 @@ export async function processMedia(
           provisional = assignTeams(colours, others).teams;
           others.forEach((id) => provisional.set(id, -1));
         }
+        const last = raw[raw.length - 1];
         opts.onFrame({
-          img: f.img,
-          t: f.t,
+          frame: {
+            t: f.t,
+            players: dets.map(([id, b]) => [id, -1, (b[0] + b[2]) / 2 / W, b[3] / H, (b[3] - b[1]) / H] as PlayerRow),
+            ball: last.ball,
+          },
+          teams: provisional,
           duration: times[total - 1],
-          players: dets.map(([id, b]) => ({ id, team: provisional.get(id) ?? -1, cx: (b[0] + b[2]) / 2, foot: b[3], height: b[3] - b[1] })),
-          ball: ball ? [(ball[0] + ball[2]) / 2, (ball[1] + ball[3]) / 2] : null,
         });
       }
       next++;
@@ -211,7 +233,7 @@ export async function processMedia(
   const flush = () => {
     const items = batch;
     batch = [];
-    const p = detectBatch(items.map((b) => b.data), opts.signal).then((res) => {
+    const p = detectBatch(items.map((b) => b.data), opts.model, opts.signal).then((res) => {
       items.forEach((b, k) => (pending.get(b.idx)!.dets = res[k] ?? []));
       detected += items.length;
       opts.onProgress({ stage: "detecting", done: detected, total });
@@ -246,7 +268,8 @@ export async function processMedia(
   }
 
   opts.onProgress({ stage: "finishing", done: total, total });
-  return buildResult(raw, W, H, fps, colours, currentOthers(), keyframes, (performance.now() - t0) / 1000, size);
+  const modelName = opts.model === "pro" ? "YOLOv8s football (stadium footage)" : "YOLOv8s general (grassroots)";
+  return buildResult(raw, W, H, fps, colours, currentOthers(), keyframes, (performance.now() - t0) / 1000, size, camera, modelName);
 }
 
 function interpolateBall(balls: ([number, number] | null)[], maxGap = 3) {
@@ -291,6 +314,8 @@ function buildResult(
   keyframes: Map<number, HTMLCanvasElement>,
   seconds: number,
   imgsz: number,
+  camera: [number, number][],
+  model: string,
 ): TrackingResult {
   const { teams, teamColors } = assignTeams(colours, others);
   others.forEach((id) => teams.set(id, -1));
@@ -316,7 +341,7 @@ function buildResult(
   const mid = slots[Math.floor(slots.length / 2)];
   return {
     version: 1,
-    model: "YOLOv8s football (ONNX on Vercel)",
+    model,
     imgsz,
     width: W,
     height: H,
@@ -329,6 +354,8 @@ function buildResult(
     frames,
     keyframes: slots.filter((s) => raw[s]).map((s) => ({ t: raw[s].t, image: annotate(keyframes.get(s)!, raw[s].dets, balls[s], teams) })),
     calibrationFrame: mid !== undefined ? keyframes.get(mid)!.toDataURL("image/jpeg", 0.8) : null,
+    calibrationIndex: mid ?? 0,
+    camera: camera.length === frames.length ? camera.map(([x, y]) => [r4(x), r4(y)] as [number, number]) : undefined,
     processingSeconds: Math.round(seconds),
   };
 }

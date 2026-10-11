@@ -2,24 +2,36 @@ import path from "node:path";
 import jpeg from "jpeg-js";
 import * as ort from "onnxruntime-node";
 
-/** Football fine-tuned YOLOv8s (uisikdag/yolo-v8-football-players-detection), exported to ONNX. */
-export const MODEL_FILE = "football-yolov8s.onnx";
+/** Output classes shared by every model: 0 ball, 1 goalkeeper, 2 player, 3 referee. */
 export const CLASSES = ["ball", "goalkeeper", "player", "referee"] as const;
+
+export const MODELS = {
+  /** General COCO YOLOv8s: person → player, sports ball → ball. Robust on dirt pitches, phone video and amateur kits. */
+  grassroots: { file: "yolov8s-coco.onnx", map: { 0: 2, 32: 0 } as Record<number, number> },
+  /** YOLOv8s fine-tuned on pro broadcast footage (uisikdag/yolo-v8-football-players-detection). Knows keepers and referees. */
+  pro: { file: "football-yolov8s.onnx", map: { 0: 0, 1: 1, 2: 2, 3: 3 } as Record<number, number> },
+};
+export type ModelKey = keyof typeof MODELS;
+export const isModelKey = (k: unknown): k is ModelKey => typeof k === "string" && k in MODELS;
 
 /** [classIndex, confidence, x1, y1, x2, y2] in the pixel space of the submitted (letterboxed) image. */
 export type Detection = [number, number, number, number, number, number];
 
-let session: Promise<ort.InferenceSession> | null = null;
+const sessions = new Map<ModelKey, Promise<ort.InferenceSession>>();
 
-export function getSession() {
-  session ??= ort.InferenceSession.create(path.join(process.cwd(), "models", MODEL_FILE), {
-    graphOptimizationLevel: "all",
-    executionProviders: ["cpu"],
-  }).catch((e) => {
-    session = null; // allow a retry on the next request
-    throw e;
-  });
-  return session;
+export function getSession(model: ModelKey) {
+  let s = sessions.get(model);
+  if (!s) {
+    s = ort.InferenceSession.create(path.join(process.cwd(), "models", MODELS[model].file), {
+      graphOptimizationLevel: "all",
+      executionProviders: ["cpu"],
+    }).catch((e) => {
+      sessions.delete(model); // allow a retry on the next request
+      throw e;
+    });
+    sessions.set(model, s);
+  }
+  return s;
 }
 
 function toTensor(jpg: Uint8Array) {
@@ -44,18 +56,18 @@ function iou(a: Detection, b: Detection) {
 }
 
 /** Decode YOLOv8 output [1, 4 + C, N] and apply NMS (people are suppressed together, the ball separately). */
-function postprocess(out: ort.Tensor, minConf: number): Detection[] {
-  const [, rows, n] = out.dims as number[];
+function postprocess(out: ort.Tensor, minConf: number, classMap: Record<number, number>): Detection[] {
+  const [, , n] = out.dims as number[];
   const v = out.data as Float32Array;
-  const C = rows - 4;
+  const src = Object.keys(classMap).map(Number);
   const cands: Detection[] = [];
   for (let i = 0; i < n; i++) {
     let best = 0, cls = 0;
-    for (let c = 0; c < C; c++) {
+    for (const c of src) {
       const s = v[(4 + c) * n + i];
       if (s > best) {
         best = s;
-        cls = c;
+        cls = classMap[c];
       }
     }
     // The ball is tiny and often blurred, so let it through at a lower score.
@@ -72,8 +84,8 @@ function postprocess(out: ort.Tensor, minConf: number): Detection[] {
   return keep.map((d) => [d[0], +d[1].toFixed(3), +d[2].toFixed(1), +d[3].toFixed(1), +d[4].toFixed(1), +d[5].toFixed(1)]);
 }
 
-export async function detect(jpg: Uint8Array, minConf = 0.25): Promise<Detection[]> {
-  const s = await getSession();
+export async function detect(jpg: Uint8Array, model: ModelKey, minConf = 0.25): Promise<Detection[]> {
+  const s = await getSession(model);
   const out = await s.run({ [s.inputNames[0]]: toTensor(jpg) });
-  return postprocess(out[s.outputNames[0]], minConf);
+  return postprocess(out[s.outputNames[0]], minConf, MODELS[model].map);
 }

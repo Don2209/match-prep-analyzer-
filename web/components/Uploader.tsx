@@ -1,9 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { drawOverlay } from "@/lib/overlay";
-import { LiveFrame, processMedia } from "@/lib/pipeline";
-import type { TrackingResult } from "@/lib/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ModelChoice, processMedia } from "@/lib/pipeline";
+import type { TrackingFrame, TrackingResult } from "@/lib/types";
+import { TrackedVideo } from "./Replay";
+
+const MODEL_OPTIONS: { key: ModelChoice; title: string; text: string }[] = [
+  {
+    key: "grassroots",
+    title: "Grassroots / amateur",
+    text: "Dirt or patchy pitches, phone or low-quality video, local leagues. General YOLOv8 people + ball detector.",
+  },
+  {
+    key: "pro",
+    title: "Stadium / broadcast",
+    text: "Professional grass pitch and TV-style footage. Football-trained YOLOv8 that also recognises referees and keepers.",
+  },
+];
 
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
@@ -20,6 +33,7 @@ export function Uploader({
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [accurate, setAccurate] = useState(false);
+  const [model, setModel] = useState<ModelChoice>("grassroots");
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("");
@@ -28,9 +42,10 @@ export function Uploader({
   const [live, setLive] = useState<{ t: number; duration: number; players: number; ball: boolean } | null>(null);
   const abort = useRef<AbortController>();
   const input = useRef<HTMLInputElement>(null);
-  const liveCanvas = useRef<HTMLCanvasElement>(null);
-  const latest = useRef<LiveFrame | null>(null);
-  const raf = useRef(0);
+  const liveFrames = useRef<TrackingFrame[]>([]);
+  const liveTeams = useRef(new Map<number, number>());
+  const getLiveFrames = useCallback(() => liveFrames.current, []);
+  const liveTeamOf = useCallback((id: number) => liveTeams.current.get(id) ?? -1, []);
 
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => {
@@ -39,22 +54,6 @@ export function Uploader({
     setPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [file]);
-
-  /** Paint the most recently analysed frame (at most once per animation frame). */
-  function paint() {
-    raf.current = 0;
-    const f = latest.current;
-    const c = liveCanvas.current;
-    if (!f || !c) return;
-    if (c.width !== f.img.width || c.height !== f.img.height) {
-      c.width = f.img.width;
-      c.height = f.img.height;
-    }
-    const ctx = c.getContext("2d")!;
-    ctx.putImageData(f.img, 0, 0);
-    drawOverlay(ctx, f.players, f.ball);
-    setLive({ t: f.t, duration: f.duration, players: f.players.length, ball: !!f.ball });
-  }
 
   const busy = phase === "running";
 
@@ -84,15 +83,18 @@ export function Uploader({
     setPhase("running");
     setProgress(0);
     setLive(null);
-    latest.current = null;
+    liveFrames.current = [];
+    liveTeams.current = new Map();
     setMessage("Opening the clip…");
     try {
       const result = await processMedia(file, {
         accurate,
+        model,
         signal: abort.current.signal,
-        onFrame: (f) => {
-          latest.current = f;
-          if (!raf.current) raf.current = requestAnimationFrame(paint);
+        onFrame: ({ frame, teams, duration }) => {
+          liveFrames.current.push(frame);
+          liveTeams.current = teams;
+          setLive({ t: frame.t, duration, players: frame.players.length, ball: !!frame.ball });
         },
         onProgress: ({ stage, done, total }) => {
           setProgress(stage === "reading" ? 0.02 : done / total);
@@ -101,7 +103,7 @@ export function Uploader({
               ? "Splitting teams by jersey colour…"
               : stage === "reading"
                 ? "Warming up the YOLOv8 model…"
-                : `YOLOv8 detecting players & ball: frame ${done} of ${total}`,
+                : `YOLOv8 detecting players & ball: ${done} of ${total} frames`,
           );
         },
       });
@@ -126,22 +128,25 @@ export function Uploader({
         <span className="text-xs text-muted">Video up to 3 min (first 3 min used), or a single frame</span>
       </div>
 
-      {busy ? (
-        <div className="relative mt-4 overflow-hidden rounded-xl border border-line bg-black">
-          <canvas ref={liveCanvas} className={`block w-full ${live ? "" : "hidden"}`} aria-label="Live analysis preview" />
-          {!live && (
-            <div className="flex aspect-video items-center justify-center text-sm text-white/70">Waiting for the first detections…</div>
-          )}
-          {live && (
-            <div className="absolute left-3 top-3 flex flex-wrap items-center gap-2 text-xs font-medium text-white">
+      {busy && previewUrl && file?.type.startsWith("video/") ? (
+        <div className="mt-4">
+          <TrackedVideo src={previewUrl} getFrames={getLiveFrames} teamOf={liveTeamOf} live>
+            <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap items-center gap-2 text-xs font-medium text-white">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-[#e34948]" />
-                ANALYZING {clock(live.t)} / {clock(live.duration)}
+                {live ? `ANALYSED ${clock(live.t)} / ${clock(live.duration)}` : "STARTING…"}
               </span>
-              <span className="rounded-full bg-black/60 px-2.5 py-1">{live.players} tracked</span>
-              <span className="rounded-full bg-black/60 px-2.5 py-1">{live.ball ? "ball ▼" : "ball not seen"}</span>
+              {live && <span className="rounded-full bg-black/60 px-2.5 py-1">{live.players} tracked</span>}
             </div>
-          )}
+          </TrackedVideo>
+          <p className="mt-1 text-xs text-muted">
+            The clip plays at normal speed, looping over the part analysed so far, which grows as the model works. Team colours
+            settle as more of the clip is processed.
+          </p>
+        </div>
+      ) : busy ? (
+        <div className="mt-4 flex aspect-video items-center justify-center rounded-xl border border-line bg-black text-sm text-white/70">
+          Analysing the image…
         </div>
       ) : file && previewUrl && !file.name.endsWith(".json") ? (
         <div className="mt-4">
@@ -193,6 +198,26 @@ export function Uploader({
         </button>
       )}
       <input ref={input} type="file" accept={ACCEPT} className="hidden" onChange={(e) => pick(e.target.files?.[0])} />
+
+      <fieldset className="mt-4" disabled={busy}>
+        <legend className="label">Footage type</legend>
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          {MODEL_OPTIONS.map((o) => (
+            <label
+              key={o.key}
+              className={`flex cursor-pointer gap-3 rounded-xl border p-3 text-sm transition ${
+                model === o.key ? "border-accent bg-surface2" : "border-line hover:border-ink2"
+              }`}
+            >
+              <input type="radio" name="model" className="mt-1" checked={model === o.key} onChange={() => setModel(o.key)} />
+              <span>
+                <span className="block font-medium">{o.title}</span>
+                <span className="block text-xs text-muted">{o.text}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <button className="btn-primary" onClick={start} disabled={!file || busy}>
