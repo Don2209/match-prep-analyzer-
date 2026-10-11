@@ -9,7 +9,7 @@ import { runAnalysis } from "@/lib/client";
 import { demoTracking } from "@/lib/demo";
 import type { AnalysisConfig, Report, TrackingResult } from "@/lib/types";
 
-type Health = { status: string; model?: string; queued?: number; running?: number };
+type Health = { status: string; model?: string };
 
 const DEFAULT_CONFIG: AnalysisConfig = { ourTeam: 0, ourName: "Our team", oppName: "Opponent", ourDirection: "ltr", calibration: null };
 
@@ -37,7 +37,7 @@ export default function Home() {
     let timer: ReturnType<typeof setTimeout>;
     const check = async () => {
       try {
-        const h: Health = await fetch("/api/health", { cache: "no-store" }).then((r) => r.json());
+        const h: Health = await fetch("/api/detect", { cache: "no-store" }).then((r) => r.json());
         if (stop) return;
         setHealth(h);
         timer = setTimeout(check, h.status === "ok" ? 60000 : 10000);
@@ -79,7 +79,13 @@ export default function Home() {
 
   function demo() {
     const t = demoTracking();
-    const cfg: AnalysisConfig = { ...DEFAULT_CONFIG, ourName: "Red FC", oppName: "White United" };
+    // Demo data is already top-down, so an identity calibration (frame corners = pitch corners) is exact.
+    const cfg: AnalysisConfig = {
+      ...DEFAULT_CONFIG,
+      ourName: "Red FC",
+      oppName: "White United",
+      calibration: { image: [[0, 0], [1, 0], [1, 1], [0, 1]], region: { x0: 0, y0: 0, length: 105, width: 68 } },
+    };
     setTracking(t);
     setConfig(cfg);
     generate(cfg, t);
@@ -102,14 +108,12 @@ export default function Home() {
 
   const pill =
     health.status === "ok"
-      ? { text: `Model online · ${health.model ?? "YOLOv8"}${health.running ? " · busy" : ""}`, color: "var(--good)" }
+      ? { text: "YOLOv8 football model online", color: "var(--good)" }
       : health.status === "checking"
         ? { text: "Checking model…", color: "var(--text-muted)" }
-        : health.status === "missing"
-          ? { text: "Model service not deployed. Demo data still works", color: "var(--bad)" }
-          : health.status === "error"
+        : health.status === "error"
           ? { text: "Model failed to load", color: "var(--bad)" }
-          : { text: "Model waking up (≈1 min)…", color: "var(--warn)" };
+          : { text: "Model loading…", color: "var(--warn)" };
 
   return (
     <main className="mx-auto max-w-6xl space-y-4 px-4 py-6 sm:px-6 sm:py-10">
@@ -164,7 +168,7 @@ export default function Home() {
       />
 
       <footer className="no-print pt-4 text-center text-xs text-muted">
-        Detection: Ultralytics YOLOv8 + ByteTrack on a free Hugging Face Space. Analytics run on Vercel. Footage is processed and then discarded.
+        Detection: Ultralytics YOLOv8s fine-tuned for football (ball, goalkeeper, player, referee), served as ONNX from Vercel. Only sampled frames leave your device and none are stored.
       </footer>
     </main>
   );

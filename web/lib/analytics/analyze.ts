@@ -260,12 +260,13 @@ function teamReport(side: Side, frames: Frame[], cfg: AnalysisConfig, tracking: 
   const conceded = regainPositions(frames, opp).filter((p) => teamFrame(opp, p)[0] >= (2 * L) / 3).length;
 
   const owned = frames.filter((f) => f.owner).length;
+  const ballOk = ballReliable(tracking, owned);
   const compacts = shapes.map((s) => s.compact);
   return {
     side,
     name: side === "ours" ? cfg.ourName : cfg.oppName,
     jersey: tracking.teamColors[side === "ours" ? cfg.ourTeam : ((1 - cfg.ourTeam) as 0 | 1)] ?? "#888888",
-    possessionPct: owned ? pct(frames.filter((f) => f.owner === side).length, owned) : null,
+    possessionPct: ballOk ? pct(frames.filter((f) => f.owner === side).length, owned) : null,
     avgVisible: round(mean(frames.map((f) => f.bodies[side].length))),
     formation,
     avgPositions,
@@ -294,6 +295,10 @@ function teamReport(side: Side, frames: Frame[], cfg: AnalysisConfig, tracking: 
     players: playerStats(side, frames, tracking.fps),
   };
 }
+
+export const MIN_BALL_RATE = 0.15;
+const MIN_OWNED_FRAMES = 25;
+const ballReliable = (t: TrackingResult, owned: number) => t.ballDetectionRate >= MIN_BALL_RATE && owned >= MIN_OWNED_FRAMES;
 
 /** Ball positions (absolute) where `side` won possession and kept it for at least 0.6 s. */
 function regainPositions(frames: Frame[], side: Side): Pt[] {
@@ -353,6 +358,7 @@ export function analyze(tracking: TrackingResult, cfg: AnalysisConfig): Report {
     frames: frames.length,
     fps: tracking.fps,
     calibrated,
+    ballReliable: ballReliable(tracking, frames.filter((f) => f.owner).length),
     ballDetectionRate: tracking.ballDetectionRate,
     model: tracking.model,
     generatedAt: new Date().toISOString(),

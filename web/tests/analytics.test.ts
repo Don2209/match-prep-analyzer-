@@ -71,4 +71,12 @@ describe("analyze", () => {
     expect(report.insights.length).toBeGreaterThan(0);
     expect(report.timeline.length).toBe(20);
   });
+  it("hides ball-based and shape claims when the data can't support them", () => {
+    const t = synthetic();
+    t.ballDetectionRate = 0.05;
+    const r = analyze(t, { ourTeam: 0, ourName: "Us", oppName: "Them", ourDirection: "ltr" });
+    expect(r.meta.ballReliable).toBe(false);
+    expect(r.teams.ours.possessionPct).toBeNull();
+    expect(r.insights.every((i) => i.about === "data" || i.kind === "info")).toBe(true);
+  });
 });

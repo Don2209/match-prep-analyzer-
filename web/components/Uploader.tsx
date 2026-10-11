@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getJob, uploadClip } from "@/lib/client";
+import { processMedia } from "@/lib/pipeline";
 import type { TrackingResult } from "@/lib/types";
 
-type Phase = "idle" | "uploading" | "queued" | "running" | "error";
+type Phase = "idle" | "running" | "error";
 
 const ACCEPT = "video/mp4,video/quicktime,video/webm,video/x-matroska,image/jpeg,image/png,image/webp,.json";
 
@@ -21,12 +21,12 @@ export function Uploader({
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("");
   const [drag, setDrag] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const abort = useRef<AbortController>();
   const input = useRef<HTMLInputElement>(null);
 
-  useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => () => abort.current?.abort(), []);
 
-  const busy = phase === "uploading" || phase === "queued" || phase === "running";
+  const busy = phase === "running";
 
   async function pick(f: File | undefined) {
     if (!f) return;
@@ -47,49 +47,38 @@ export function Uploader({
     setMessage("");
   }
 
-  function poll(id: string) {
-    timer.current = setTimeout(async () => {
-      try {
-        const job = await getJob(id);
-        if (job.status === "done" && job.result) {
-          setPhase("idle");
-          setProgress(1);
-          onTracking(job.result, file?.name.replace(/\.[^.]+$/, "") ?? "Clip");
-          return;
-        }
-        if (job.status === "error") throw new Error(job.error || "Processing failed.");
-        setPhase(job.status === "queued" ? "queued" : "running");
-        setProgress(job.progress);
-        setMessage(
-          job.status === "queued"
-            ? `Waiting in queue (${job.queuePosition} ahead)…`
-            : `Detecting & tracking players… ${Math.round(job.progress * 100)}%`,
-        );
-        poll(id);
-      } catch (e) {
-        setPhase("error");
-        setMessage(e instanceof Error ? e.message : "Lost contact with the model service.");
-      }
-    }, 2000);
-  }
-
   async function start() {
     if (!file) return;
-    setPhase("uploading");
+    abort.current = new AbortController();
+    setPhase("running");
     setProgress(0);
-    setMessage("Uploading to the YOLOv8 service…");
+    setMessage("Opening the clip…");
     try {
-      const { id } = await uploadClip(file, accurate, (p) => {
-        setProgress(p);
-        setMessage(`Uploading… ${Math.round(p * 100)}%`);
+      const result = await processMedia(file, {
+        accurate,
+        signal: abort.current.signal,
+        onProgress: ({ stage, done, total }) => {
+          setProgress(stage === "reading" ? 0.02 : done / total);
+          setMessage(
+            stage === "finishing"
+              ? "Splitting teams by jersey colour…"
+              : stage === "reading"
+                ? "Warming up the YOLOv8 model…"
+                : `YOLOv8 detecting players & ball: frame ${done} of ${total}`,
+          );
+        },
       });
-      setPhase("queued");
-      setProgress(0);
-      setMessage("Queued for processing…");
-      poll(id);
+      setPhase("idle");
+      setProgress(1);
+      onTracking(result, file.name.replace(/\.[^.]+$/, ""));
     } catch (e) {
+      if ((e as Error).name === "AbortError") {
+        setPhase("idle");
+        setMessage("");
+        return;
+      }
       setPhase("error");
-      setMessage(e instanceof Error ? e.message : "Upload failed.");
+      setMessage(e instanceof Error ? e.message : "Processing failed.");
     }
   }
 
@@ -97,7 +86,7 @@ export function Uploader({
     <section className="card">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-lg font-semibold">1 · Upload footage</h2>
-        <span className="text-xs text-muted">Video up to 3 min / 150 MB, or a single frame</span>
+        <span className="text-xs text-muted">Video up to 3 min (first 3 min used), or a single frame</span>
       </div>
 
       <button
@@ -136,8 +125,13 @@ export function Uploader({
         </button>
         <label className="flex items-center gap-2 text-sm text-ink2">
           <input type="checkbox" checked={accurate} onChange={(e) => setAccurate(e.target.checked)} disabled={busy} />
-          Accurate mode (960 px, better ball detection, about 2× slower)
+          Accurate mode (960 px, catches small and distant players and the ball, about 2× slower)
         </label>
+        {busy && (
+          <button className="btn-ghost" onClick={() => abort.current?.abort()}>
+            Cancel
+          </button>
+        )}
         <button className="btn-ghost ml-auto" onClick={onDemo} disabled={busy}>
           Try demo data
         </button>
@@ -152,7 +146,9 @@ export function Uploader({
           )}
           <p className={`mt-2 text-sm ${phase === "error" ? "text-[color:var(--bad)]" : "text-ink2"}`}>{message}</p>
           {phase === "running" && (
-            <p className="mt-1 text-xs text-muted">The free CPU runs at about 2–4 min per 2-minute clip. You can leave this tab open.</p>
+            <p className="mt-1 text-xs text-muted">
+              Frames are read in your browser, and the model runs on the server. A 1-minute clip takes about 1–3 min. Keep this tab open.
+            </p>
           )}
         </div>
       )}

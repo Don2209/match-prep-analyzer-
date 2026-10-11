@@ -52,6 +52,7 @@ export function Setup({
         <span>
           <span className="block font-medium">Jersey {k === 0 ? "A" : "B"}</span>
           <span className="block text-xs text-muted">
+            {tracking.keyframes?.length ? `${k === 0 ? "blue" : "orange"} rings · ` : ""}
             {players ? `${players} tracks · ` : ""}
             {ours ? "our team" : "opponent"}
           </span>
@@ -72,7 +73,7 @@ export function Setup({
 
       {!!tracking.keyframes?.length && (
         <div className="mt-4">
-          <p className="label">Detection check: rings show the team split, ▼ marks the ball</p>
+          <p className="label">Detection check: blue and orange rings = the two teams, yellow = referee, keeper or unsure, ▼ = ball</p>
           <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
             {tracking.keyframes.map((k) =>
               k.image ? (

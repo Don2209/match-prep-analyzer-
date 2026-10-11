@@ -102,6 +102,8 @@ export interface Report {
     frames: number;
     fps: number;
     calibrated: boolean;
+    /** Ball seen often enough for possession / pressing / channel metrics to mean something. */
+    ballReliable: boolean;
     ballDetectionRate: number;
     model: string;
     generatedAt: string;

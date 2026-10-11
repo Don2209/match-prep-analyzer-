@@ -53,8 +53,8 @@ export function Dashboard({ report, onSave, saved }: { report: Report; onSave: (
         <DuoTile label="Defensive line (from own goal)" ours={`${approx}${ours.shape.defLine} m`} opp={`${approx}${opp.shape.defLine} m`} note="Average depth of the 4 deepest outfielders" />
         <DuoTile
           label="Pressing (2+ near ball)"
-          ours={`${ours.pressing.pressingRate}%`}
-          opp={`${opp.pressing.pressingRate}%`}
+          ours={report.meta.ballReliable === false ? "—" : `${ours.pressing.pressingRate}%`}
+          opp={report.meta.ballReliable === false ? "—" : `${opp.pressing.pressingRate}%`}
           note="Share of the opponent's possession with 2 or more players within 10 m of the ball"
         />
       </div>
@@ -140,7 +140,7 @@ function PossessionTile({ ours, opp }: { ours: TeamReport; opp: TeamReport }) {
     <div className="card">
       <p className="label">Possession</p>
       {a === null || b === null ? (
-        <p className="mt-2 text-sm text-muted">Ball not detected enough</p>
+        <p className="mt-2 text-sm text-muted">Hidden: the ball wasn&apos;t seen often enough to judge possession.</p>
       ) : (
         <>
           <div className="mt-2 flex items-baseline justify-between gap-2 text-xl font-semibold tabular-nums sm:text-2xl">
