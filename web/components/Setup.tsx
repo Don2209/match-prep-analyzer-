@@ -1,6 +1,7 @@
 "use client";
 
 import type { AnalysisConfig, PitchRegion, TrackingResult } from "@/lib/types";
+import { Replay } from "./Replay";
 
 const REGIONS: { label: string; region: PitchRegion }[] = [
   { label: "Full pitch (105 × 68 m)", region: { x0: 0, y0: 0, length: 105, width: 68 } },
@@ -17,7 +18,9 @@ export function Setup({
   onChange,
   onRun,
   running,
+  videoUrl,
 }: {
+  videoUrl?: string | null;
   tracking: TrackingResult;
   config: AnalysisConfig;
   onChange: (c: AnalysisConfig) => void;
@@ -71,7 +74,14 @@ export function Setup({
         </span>
       </div>
 
-      {!!tracking.keyframes?.length && (
+      {videoUrl ? (
+        <div className="mt-4">
+          <p className="label">Tracking replay: press play to watch the analysed clip</p>
+          <div className="mt-2">
+            <Replay src={videoUrl} tracking={tracking} />
+          </div>
+        </div>
+      ) : !!tracking.keyframes?.length && (
         <div className="mt-4">
           <p className="label">Detection check: blue and orange rings = the two teams, yellow = referee, keeper or unsure, ▼ = ball</p>
           <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">

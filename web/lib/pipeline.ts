@@ -1,5 +1,6 @@
 "use client";
 
+import { drawOverlay, OverlayPlayer } from "./overlay";
 import { assignTeams, Lab, torsoColour } from "./teams";
 import { Box, Tracker } from "./tracker";
 import type { PlayerRow, TrackingResult } from "./types";
@@ -18,6 +19,15 @@ export interface Progress {
   stage: "reading" | "detecting" | "finishing";
   done: number;
   total: number;
+}
+
+/** A frame that has just been analysed, for the live preview. */
+export interface LiveFrame {
+  img: ImageData;
+  t: number;
+  duration: number;
+  players: OverlayPlayer[];
+  ball: [number, number] | null;
 }
 
 type RawDet = [number, number, number, number, number, number];
@@ -103,7 +113,7 @@ async function openVideo(file: File) {
 /** Runs the full detection + tracking + team-split pipeline and returns the tracking result. */
 export async function processMedia(
   file: File,
-  opts: { accurate: boolean; signal: AbortSignal; onProgress: (p: Progress) => void },
+  opts: { accurate: boolean; signal: AbortSignal; onProgress: (p: Progress) => void; onFrame?: (f: LiveFrame) => void },
 ): Promise<TrackingResult> {
   const t0 = performance.now();
   const size = opts.accurate ? 960 : 640;
@@ -145,6 +155,8 @@ export async function processMedia(
   const roleVotes = new Map<number, [number, number]>(); // id → [referee/keeper votes, total]
   const raw: { t: number; dets: [number, Box][]; ball: [number, number] | null }[] = [];
   let next = 0; // next frame index to feed the tracker (must be in order)
+  let provisional = new Map<number, number>(); // early team guess for the live preview, refreshed as colours accumulate
+  const currentOthers = () => new Set([...roleVotes].filter(([, [o, n]]) => o / n >= 0.5).map(([id]) => id));
   let detected = 0;
 
   const consume = () => {
@@ -176,6 +188,20 @@ export async function processMedia(
       }
       const ball = balls[0] && balls[0].conf >= 0.15 ? balls[0].box : null;
       raw.push({ t: f.t, dets, ball: ball ? [(ball[0] + ball[2]) / 2 / W, (ball[1] + ball[3]) / 2 / H] : null });
+      if (opts.onFrame) {
+        if (next % 5 === 0 && colours.size >= 2) {
+          const others = currentOthers();
+          provisional = assignTeams(colours, others).teams;
+          others.forEach((id) => provisional.set(id, -1));
+        }
+        opts.onFrame({
+          img: f.img,
+          t: f.t,
+          duration: times[total - 1],
+          players: dets.map(([id, b]) => ({ id, team: provisional.get(id) ?? -1, cx: (b[0] + b[2]) / 2, foot: b[3], height: b[3] - b[1] })),
+          ball: ball ? [(ball[0] + ball[2]) / 2, (ball[1] + ball[3]) / 2] : null,
+        });
+      }
       next++;
     }
   };
@@ -220,8 +246,7 @@ export async function processMedia(
   }
 
   opts.onProgress({ stage: "finishing", done: total, total });
-  const others = new Set([...roleVotes].filter(([, [o, n]]) => o / n >= 0.5).map(([id]) => id));
-  return buildResult(raw, W, H, fps, colours, others, keyframes, (performance.now() - t0) / 1000, size);
+  return buildResult(raw, W, H, fps, colours, currentOthers(), keyframes, (performance.now() - t0) / 1000, size);
 }
 
 function interpolateBall(balls: ([number, number] | null)[], maxGap = 3) {
@@ -241,9 +266,6 @@ function interpolateBall(balls: ([number, number] | null)[], maxGap = 3) {
   return out;
 }
 
-/** Rings use fixed high-contrast colours (blue = jersey A, orange = jersey B, yellow = referee/keeper/unsure). */
-const RING = ["#3987e5", "#eb6834"];
-
 function annotate(src: HTMLCanvasElement, dets: [number, Box][], ball: [number, number] | null, teams: Map<number, number>) {
   const c = document.createElement("canvas");
   const s = Math.min(1, 960 / src.width);
@@ -251,29 +273,11 @@ function annotate(src: HTMLCanvasElement, dets: [number, Box][], ball: [number, 
   c.height = Math.round(src.height * s);
   const ctx = c.getContext("2d")!;
   ctx.drawImage(src, 0, 0, c.width, c.height);
-  ctx.lineWidth = 2;
-  ctx.font = "bold 11px system-ui, sans-serif";
-  ctx.textAlign = "center";
-  for (const [id, [x1, y1, x2, y2]] of dets) {
-    const team = teams.get(id) ?? -1;
-    const col = team === 0 || team === 1 ? RING[team] : "#ffd400";
-    const cx = ((x1 + x2) / 2) * s, foot = y2 * s, rx = Math.max(6, (x2 - x1) * 0.6 * s);
-    ctx.strokeStyle = col;
-    ctx.beginPath();
-    ctx.ellipse(cx, foot, rx, 4, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = col;
-    ctx.fillText(String(id), cx, y1 * s - 4);
-  }
-  if (ball) {
-    const bx = ball[0] * c.width, by = ball[1] * c.height;
-    ctx.fillStyle = "#ffffff";
-    ctx.beginPath();
-    ctx.moveTo(bx - 6, by - 16);
-    ctx.lineTo(bx + 6, by - 16);
-    ctx.lineTo(bx, by - 7);
-    ctx.fill();
-  }
+  drawOverlay(
+    ctx,
+    dets.map(([id, [x1, y1, x2, y2]]) => ({ id, team: teams.get(id) ?? -1, cx: ((x1 + x2) / 2) * s, foot: y2 * s, height: (y2 - y1) * s })),
+    ball ? [ball[0] * c.width, ball[1] * c.height] : null,
+  );
   return c.toDataURL("image/jpeg", 0.75);
 }
 

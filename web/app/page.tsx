@@ -22,6 +22,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [savedId, setSavedId] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const setupRef = useRef<HTMLDivElement>(null);
   const reportRef = useRef<HTMLDivElement>(null);
 
@@ -52,7 +53,11 @@ export default function Home() {
     };
   }, []);
 
-  function onTracking(t: TrackingResult, name: string) {
+  function onTracking(t: TrackingResult, name: string, file?: File) {
+    setVideoUrl((old) => {
+      if (old) URL.revokeObjectURL(old);
+      return file?.type.startsWith("video/") ? URL.createObjectURL(file) : null;
+    });
     setTracking(t);
     setReport(null);
     setSavedId(null);
@@ -79,6 +84,7 @@ export default function Home() {
 
   function demo() {
     const t = demoTracking();
+    setVideoUrl(null);
     // Demo data is already top-down, so an identity calibration (frame corners = pitch corners) is exact.
     const cfg: AnalysisConfig = {
       ...DEFAULT_CONFIG,
@@ -137,7 +143,7 @@ export default function Home() {
 
       {tracking && (
         <div ref={setupRef} className="no-print scroll-mt-4">
-          <Setup tracking={tracking} config={config} onChange={setConfig} onRun={() => generate()} running={running} />
+          <Setup tracking={tracking} videoUrl={videoUrl} config={config} onChange={setConfig} onRun={() => generate()} running={running} />
         </div>
       )}
 
